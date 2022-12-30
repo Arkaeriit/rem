@@ -130,7 +130,8 @@ func main() {
 		updateAndIgnoreIfHasOption("recursive", "r", nil)
 		updateAndIgnoreIfHasOption("", "R", nil)
 		updateAndIgnoreIfHasOption("one-file-system", "", nil)
-		updateAndIgnoreIfHasOption("-no-preserve-root", "preserve-root", nil) // short one actually used as a long option using a - at the start
+		updateAndIgnoreIfHasOption("preserve-root", "", nil)
+		updateAndIgnoreIfHasOption("no-preserve-root", "", nil)
 	} else {
 		if hasOption, _ := argsHaveOption("help", "h"); hasOption {
 			fmt.Println(helpMsg)
@@ -259,7 +260,7 @@ func trashFile(path string) {
 		}
 		return
 	}
-	toMoveTo = getTimestampedPath(toMoveTo, exists)
+	toMoveTo += getTimestamp(toMoveTo, exists)
 	if flags.moveByCopyOk {
 		err = renameByCopyAllowed(path, toMoveTo)
 	} else {
@@ -271,7 +272,14 @@ func trashFile(path string) {
 	}
 
 	absPath, _ := filepath.Abs(path)
-	logFile[absPath] = toMoveTo // format is path where it came from ==> path in trash
+
+	// make sure there are no conflicts in the log
+	stamp := getTimestamp(absPath, existsInLog)
+
+	if stamp != "" {
+		printIfNotQuiet("To avoid conflicts, " + color.YellowString(filepath.Base(absPath)) + " will be stored as " + color.YellowString(filepath.Base(absPath+stamp)))
+	}
+	logFile[absPath+stamp] = toMoveTo // format is path where it came from ==> path in trash
 	setLogFile(logFile)
 	// if we've reached here, trashing is complete and successful
 	if flags.rmMode {
@@ -280,10 +288,14 @@ func trashFile(path string) {
 		}
 		return
 	}
+
+	var undoStr string
 	if strings.ContainsAny(path, " \"'`\t|\\!#$&*(){}[];,<>?^~") {
-		path = "'" + path + "'"
+		undoStr = "'" + path + stamp + "'"
+	} else {
+		undoStr = path + stamp
 	}
-	printIfNotQuiet("Trashed " + color.YellowString(path) + "\nUndo using " + color.YellowString("rem --undo "+path))
+	printIfNotQuiet("Trashed " + color.YellowString(path) + "\nUndo using " + color.YellowString("rem --undo "+undoStr))
 }
 
 func renameByCopyAllowed(src, dst string) error {
@@ -299,35 +311,32 @@ func renameByCopyAllowed(src, dst string) error {
 }
 
 // existsFunc() is used to determine if there is a conflict. It should return true if there is a conflict.
-func getTimestampedPath(path string, existsFunc func(string) bool) string {
-	var i int // make i accessible in function scope to check if it changed
-	oldPath := path
-	for ; existsFunc(path); i++ { // big fiasco for avoiding clashes and using smallest timestamp possible along with easter eggs
+func getTimestamp(path string, existsFunc func(string) bool) string {
+	stamp := ""
+	useFmt := func(fmt string) { stamp = "_" + time.Now().Format(fmt) }
+	for i := 0; existsFunc(path + stamp); i++ { // big fiasco for avoiding clashes and using smallest timestamp possible along with easter eggs
 		switch i {
 		case 0:
-			path = oldPath + " " + time.Now().Format("Jan 2 15:04:05")
-		case 1: // seconds are the same
-			path = oldPath + " " + time.Now().Format("Jan 2 15:04:05.000")
-		case 2: // milliseconds are same
-			path = oldPath + " " + time.Now().Format("Jan 2 15:04:05.000000")
+			useFmt("Jan2")
+		case 1:
+			useFmt("Jan2_15:04")
+		case 2:
+			useFmt("Jan2_15:04:05")
+		case 3: // seconds aren't enough
+			useFmt("Jan2_15:04:05.000")
+		case 4: // milliseconds aren't enough
+			useFmt("Jan2_15:04:05.000000")
 			fmt.Println("No way. This is super unlikely. Please contact my creator at igoel.mail@gmail.com or on github @quackduck and tell him what you were doing.")
-		case 3: // microseconds are same
-			path = oldPath + " " + time.Now().Format("Jan 2 15:04:05.000000000")
+		case 5: // microseconds aren't enough
+			useFmt("Jan2_15:04:05.000000000")
 			fmt.Println("You are a god.")
-		case 4:
-			rand.Seed(time.Now().UTC().UnixNano()) // prep for default case
 		default: // nano-freaking-seconds aren't enough for this guy
 			fmt.Println("(speechless)")
-			if i == 4 { // seed once
-				rand.Seed(time.Now().UTC().UnixNano())
-			}
-			path = oldPath + " " + strconv.FormatInt(rand.Int63(), 10) // add random stuff at the end
+			rand.Seed(time.Now().UTC().UnixNano())
+			stamp = "_" + strconv.FormatInt(rand.Int63(), 10) // add random stuff at the end
 		}
 	}
-	if i != 0 {
-		printIfNotQuiet("To avoid conflicts, " + color.YellowString(oldPath) + " will now be called " + color.YellowString(path))
-	}
-	return path
+	return stamp
 }
 
 func listFilesInTrash() []string {
@@ -494,7 +503,7 @@ func argsHaveOption(long string, short string) (hasOption bool, foundAt int) {
 		if arg == "--" {
 			return false, 0
 		}
-		if arg == "--"+long && long != "" || (len(arg) > 1 && arg[0] == '-' && arg[1] != '-' && short != "" && strings.Contains(arg[1:], short)) {
+		if long != "" && arg == "--"+long || (short != "" && len(arg) > 1 && arg[0] == '-' && arg[1] != '-' && strings.Contains(arg[1:], short)) {
 			return true, i
 		}
 	}
